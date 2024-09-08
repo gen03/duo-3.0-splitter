@@ -1,153 +1,207 @@
 #!/usr/bin/ruby
 
-require 'optparse'
-require 'pathname'
+require 'optparse'  # コマンドライン引数を解析するためのライブラリ
+require 'pathname'  # ファイルパスの操作を簡単に行うためのライブラリ
 
+# メインのアプリケーションクラス
 class App
+  # エラーメッセージ用のカスタム例外クラス
   class Error < StandardError
   end
 
+  # セクションの数
   NUMBER_OF_SECTIONS = 45
+  # 全体のトラック数
   NUMBER_OF_TRACKS = 560
 
+  # データディレクトリのパス
   DATA_DIR = Pathname.new(__dir__) + '../data'
 
+  # 対応する音声フォーマットのリスト
   FORMATS = %w[mp3 aac wav]
 
+  # 初期化メソッド
   def initialize
+    # 音声データに関するデータベースを読み込む
     @db = load_db
+    # デフォルトの出力ディレクトリをデスクトップの「DUO 3.0」フォルダに設定
     @output_dir = Pathname.new(File.expand_path('~/Desktop/DUO 3.0'))
+    # デフォルトの出力フォーマットを MP3 に設定
     @format = 'mp3'
   end
 
+  # アプリケーションの実行メソッド
   def run(argv=ARGV)
+    # コマンドライン引数を解析
     parse_options(argv)
+    # 引数（ファイル）を処理
     handle_args(argv)
+    # 分割コマンドを生成して実行
     process(build_commands)
   end
 
   private
 
+  # データベースを読み込むメソッド
   def load_db
     db = {}
 
+    # 各セクションのラベルファイルを読み込んで処理
     (1..NUMBER_OF_SECTIONS).each do |section_number|
+      # セクションに対応するラベルファイルのパスを取得
       path = DATA_DIR.join('labels/%02d.txt' % section_number)
 
+      # ラベルファイルを読み込み、タブ区切りで分割
       records = path.readlines.map(&:chomp).map {|line| line.split(/\t/) }
 
+      # 各行を2つずつ処理して開始位置と終了位置を抽出
       records.each_cons(2) do |current_record, next_record|
-        start_pos = current_record[0]
-        end_pos = next_record[0]
-        track_number = current_record[2].to_i
+        start_pos = current_record[0]  # 開始位置
+        end_pos = next_record[0]  # 終了位置
+        track_number = current_record[2].to_i  # トラック番号を整数に変換
 
+        # トラック番号が重複している場合はエラーを発生させる
         if db.has_key?(track_number)
           raise Error, "found duplicate track #{track_number} in #{path}"
         end
 
+        # データベースにトラック情報を保存
         db[track_number] = {
-          start_pos: start_pos,
-          end_pos: end_pos,
-          section: section_number
+          start_pos: start_pos,  # 開始位置
+          end_pos: end_pos,      # 終了位置
+          section: section_number  # セクション番号
         }
       end
     end
 
+    # 全てのトラックに対して、データが読み込まれているか確認
     (1..NUMBER_OF_TRACKS).each do |track_number|
       unless db[track_number]
         raise Error, "couldn't load a record for track #{track_number}"
       end
     end
 
+    # 完成したデータベースを返す
     db
   end
 
+  # コマンドラインオプションを解析するメソッド
   def parse_options(argv)
     parser = OptionParser.new
 
+    # 使用方法の説明
     parser.banner = "Usage: #{File.basename($PROGRAM_NAME)} [options] FILES..."
 
+    # 出力ディレクトリの指定オプション
     parser.on('-d', '--output-dir=PATH', "Output directory (default: #{@output_dir})") do |value|
       @output_dir = Pathname.new(value)
     end
 
+    # 出力フォーマットの指定オプション
     parser.on('-f', '--format=FORMAT', FORMATS, "Output format (default: #{@format}; one of #{FORMATS.join(', ')})") do |value|
       @format = value
     end
 
+    # コマンドライン引数を解析
     parser.parse!(argv)
   end
 
+  # 引数（ファイル名）の処理メソッド
   def handle_args(argv)
+    # 引数がない場合はエラーメッセージを表示して終了
     if argv.empty?
       abort 'no files were given'
     end
 
+    # 各入力ファイルのパスを処理
     argv.each do |path|
       path = Pathname.new(path)
 
+      # ファイル名が数字で始まっているかを確認してセクション番号を取得
       if /\A(\d+)/ =~ path.basename.to_s
         section_number = $1.to_i
 
+        # データベースの各レコードに対して、セクション番号が一致するファイルを関連付ける
         @db.each do |_, record|
           if record[:section] == section_number
-            record[:source] = path
+            record[:source] = path  # ファイルパスをソースとして設定
           end
         end
       else
+        # ファイル名が数字で始まっていない場合はエラーを表示
         abort "input file name doesn't start with a number: #{path}"
       end
     end
   end
 
+  # コマンドを実行するメソッド
   def process(commands)
+    # 出力ディレクトリが存在しない場合は作成
     @output_dir.mkpath
 
+    # 各コマンドを実行
     commands.each do |command|
       unless system(*command)
+        # コマンドの実行が失敗した場合はエラーを発生させる
         raise Error, "process exit with #{$?.exitstatus}"
       end
     end
 
+    # 実行完了メッセージを表示
     puts "\u{1F37A} done."
   end
 
+  # FFmpeg コマンドを生成するメソッド
   def build_commands
+    # データベースをトラック番号順にソートし、ソースファイルが存在するものを処理
     @db.entries.sort_by(&:first).select do |_, record|
-      record[:source]
+      record[:source]  # ソースファイルが設定されているレコードのみ処理対象とする
     end.map do |track_number, record|
-      command = ['ffmpeg']
-      command += ['-y', '-i', record.fetch(:source).to_s]
-      command += ['-ss', record.fetch(:start_pos), '-to', record.fetch(:end_pos)]
+      command = ['ffmpeg']  # FFmpeg コマンドを使用
+      command += ['-y', '-i', record.fetch(:source).to_s]  # 入力ファイルを指定
+      command += ['-ss', record.fetch(:start_pos), '-to', record.fetch(:end_pos)]  # 開始位置と終了位置を指定
+
+      # 選択されたフォーマットに応じたエンコードオプションを取得
       options = send("options_for_#{@format}_encoder")
       command += options.fetch(:options)
-      output_name = '%03d.%s' % [track_number, options.fetch(:ext)]
+
+      # 出力ファイル名を "トラック番号_セクション番号" の形式で設定
+      output_name = '%03d_Section%d.%s' % [track_number, record[:section], options.fetch(:ext)]
+
+      # 曲のタイトルを "トラック番号_セクション番号" に設定するためのメタデータオプションを追加
+      title_option = ['-metadata', "title=#{'%03d_Section%d' % [track_number, record[:section]]}"]
+      command += title_option
+
+      # 出力ファイルのパスを指定
       command += [@output_dir.join(output_name).to_s]
-      command
+      command  # コマンドを返す
     end
   end
 
+  # MP3エンコーダ用のオプションを返すメソッド
   def options_for_mp3_encoder
     {
-      ext: 'mp3',
-      options: %w[-codec:a libmp3lame -q:a 0]
+      ext: 'mp3',  # 拡張子をmp3に設定
+      options: %w[-codec:a libmp3lame -q:a 0]  # LAMEエンコーダで高音質（最高品質）を指定
     }
   end
 
+  # AACエンコーダ用のオプションを返すメソッド
   def options_for_aac_encoder
     {
-      ext: 'm4a',
-      options: %w[-codec:a aac -b:a 256k]
+      ext: 'm4a',  # 拡張子をm4aに設定
+      options: %w[-codec:a aac -b:a 256k]  # AACエンコーダでビットレート256kbpsを指定
     }
   end
 
+  # WAVエンコーダ用のオプションを返すメソッド
   def options_for_wav_encoder
     {
-      ext: 'wav',
-      options: %w[-codec:a pcm_s16le]
+      ext: 'wav',  # 拡張子をwavに設定
+      options: %w[-codec:a pcm_s16le]  # PCM 16bitでエンコード
     }
   end
 end
-
+# アプリケーションのインスタンスを作成して実行
 app = App.new
 app.run
